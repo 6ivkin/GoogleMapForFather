@@ -22,4 +22,4 @@ folium.Marker(
 ).add_to(my_map)
 
 # Сохранение карты в HTML-файл
-my_map.save('map.html')
+my_map.save('index.html')
