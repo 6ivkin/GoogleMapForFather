@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+    
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
+    
+            <meta name="viewport" content="width=device-width,
+                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+            <style>
+                #map_e4b9b0a7da70c6d62730375a940105cb {
+                    position: relative;
+                    width: 100.0%;
+                    height: 100.0%;
+                    left: 0.0%;
+                    top: 0.0%;
+                }
+                .leaflet-container { font-size: 1rem; }
+            </style>
+
+            <style>html, body {
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+            }
+            </style>
+
+            <style>#map {
+                position:absolute;
+                top:0;
+                bottom:0;
+                right:0;
+                left:0;
+                }
+            </style>
+
+            <script>
+                L_NO_TOUCH = false;
+                L_DISABLE_3D = false;
+            </script>
+
+        
+</head>
+<body>
+    
+    
+            <div class="folium-map" id="map_e4b9b0a7da70c6d62730375a940105cb" ></div>
+        
+</body>
+<script>
+    
+    
+            var map_e4b9b0a7da70c6d62730375a940105cb = L.map(
+                "map_e4b9b0a7da70c6d62730375a940105cb",
+                {
+                    center: [51.533557, 46.034257],
+                    crs: L.CRS.EPSG3857,
+                    ...{
+  "zoom": 12,
+  "zoomControl": true,
+  "preferCanvas": false,
+}
+
+                }
+            );
+
+            
+
+        
+    
+            var tile_layer_e16d397ada643d020478ad8c89ac8d42 = L.tileLayer(
+                "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+                {
+  "minZoom": 0,
+  "maxZoom": 19,
+  "maxNativeZoom": 19,
+  "noWrap": false,
+  "attribution": "\u0026copy; \u003ca href=\"https://www.openstreetmap.org/copyright\"\u003eOpenStreetMap\u003c/a\u003e contributors",
+  "subdomains": "abc",
+  "detectRetina": false,
+  "tms": false,
+  "opacity": 1,
+}
+
+            );
+        
+    
+            tile_layer_e16d397ada643d020478ad8c89ac8d42.addTo(map_e4b9b0a7da70c6d62730375a940105cb);
+        
+    
+            var marker_5b9b121c004a69ca99bec986b80cb9f2 = L.marker(
+                [51.589113, 45.960988],
+                {
+}
+            ).addTo(map_e4b9b0a7da70c6d62730375a940105cb);
+        
+    
+        var popup_86b38455a59e15dbe92f5e40cd7b1781 = L.popup({
+  "maxWidth": "100%",
+});
+
+        
+            
+                var html_5937e3d12cc2367ec40fe18ae4246d36 = $(`<div id="html_5937e3d12cc2367ec40fe18ae4246d36" style="width: 100.0%; height: 100.0%;"><b>Аардоникс</b><br>г. Саратов, ул. Ак. Семенова Н.Н., д. 7<br>Инженер по эксплуатации: Хайрулин С.А. 89034757065<br>Инженер по ХиТО: Ажгалиев О.К. +7 987 324-43-64<br>Электрик: Иванов Александр +79172190313<br>Механик КТО: Чхетиани Семен +79172170066</div>`)[0];
+                popup_86b38455a59e15dbe92f5e40cd7b1781.setContent(html_5937e3d12cc2367ec40fe18ae4246d36);
+            
+        
+
+        marker_5b9b121c004a69ca99bec986b80cb9f2.bindPopup(popup_86b38455a59e15dbe92f5e40cd7b1781)
+        ;
+
+        
+    
+    
+            marker_5b9b121c004a69ca99bec986b80cb9f2.bindTooltip(
+                `<div>
+                     Аардоникс
+                 </div>`,
+                {
+  "sticky": true,
+}
+            );
+        
+</script>
+</html>
