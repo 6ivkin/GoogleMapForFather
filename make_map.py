@@ -1,219 +1,298 @@
+from __future__ import annotations
+
+import argparse
 import json
-import re
+import textwrap
+from collections import defaultdict
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from branca.element import MacroElement, Template
 
-import folium
 import pandas as pd
-from geopy.extra.rate_limiter import RateLimiter
-from geopy.geocoders import ArcGIS, Nominatim
+import requests
+import folium
+import hashlib
 
-ABBR_REPLACE = {
-    r"\bг\.\s*": "",  # убираем «г.»
-    r"\bрп\s+": "",  # «рп» (раб. посёлок)
-    r"\bр[- ]?н\b\.?": "",  # «р-н»
-    r"\bобл\.?": "",  # «обл»
-    r"\bд\.\s*": "",  # «д.»
-    r"\bдом\s*№?": "",  # «дом»
-    r"\bул\.?": "улица",  # «ул.» → «улица»
-    r"\bпр-т\.?": "проспект",  # «пр-т»
-    r"\bпр-кт\.?": "проспект",
-    r"\bпл\.?": "площадь",  # «пл.»
-}
+# ---------------------------------------------------------------------------
+# Settings
+# ---------------------------------------------------------------------------
+YANDEX_API_KEY = "be475cb4-744a-4095-bbbb-61246c795b3d"
+DEFAULT_API_KEY = YANDEX_API_KEY
+DEFAULT_EXCEL = "data/map.xlsx"
+DEFAULT_CACHE = "cache_geocode.json"
+DEFAULT_HTML = "index.html"
+DEFAULT_SHEET: str | int = 0
+DEFAULT_REGIONS = ["Саратовская", "Пензенская"]
 
-POST_CODE = re.compile(r"^\s*\d{6},?\s*")
-
-STOP_WORDS = (
-    "район",
-    "р-н",
-    "рн",
-    "область",
-    "обл",
-    "Респ.",
-    "респ",
-    "посёлок",
-    "п.",
-    "рабочий посёлок",
-    "рабочий",
-    "поселок",
-    "здание",
-    "строение",
-    "корпус",
-    "к.",
-    "литера",
-    "лит.",
-    "им.",
-    "академика",
-    "имени",
-)
-
-def try_progressive(geocoders, query: str):
+POPUP_TEMPLATE = textwrap.dedent(
     """
-    Возвращает (lat, lon, level):
-        level = "house" | "street" | "city" | None
+    <b>Наименование:</b> {Наименование}<br>
+    <b>Населенный пункт:</b> {Населенный пункт}<br>
+    <b>Адрес:</b> {Адрес}<br>
+    <b>Филиал:</b> {Филиал}<br>
+    <b>Наличие аптеки на ТТ:</b> {Наличие аптеки на ТТ}<br>
+    <b>Инженер по эксплуатации:</b> {Инженер по эксплуатации}<br>
+    <b>Инженер по ХиТО:</b> {Инженер по ХиТО}<br>
+    <b>Инженер-энергетик:</b> {Инженер-энергетик}<br>
+    <b>Инженер-теплотехник:</b> {Инженер-теплотехник}<br>
+    <b>Механик КТО:</b> {Механик КТО}<br>
+    <b>Механик ХО:</b> {Механик ХО}<br>
+    <b>Электрик:</b> {Электрик}<br>
     """
-    # 1) полный адрес (дом)
-    for g in geocoders:
-        if (loc := g(query, exactly_one=True)):
-            return loc.latitude, loc.longitude, "house"
-
-    # 2) без номера дома (улица)
-    no_house = re.sub(r"\s\d+[А-Яа-яA-Za-z/-]*\s*$", "", query)
-    if no_house != query:
-        for g in geocoders:
-            if (loc := g(no_house, exactly_one=True)):
-                return loc.latitude, loc.longitude, "street"
-
-    # 3) только город
-    parts = query.split(",")
-    if len(parts) > 2:
-        city_only = parts[1].strip()
-    else:
-        return None, None, None
-    for g in geocoders:
-        if (loc := g(f"Россия, {city_only}", exactly_one=True)):
-            return loc.latitude, loc.longitude, "city"
-
-    return None, None, None
-
-def strip_stopwords(addr: str) -> str:
-    """Удаляет всё после первого стоп-слова, чтобы оставить «Город, улица, дом»."""
-    parts = [p.strip() for p in re.split(r",", addr)]
-    clean = []
-    for p in parts:
-        if any(sw.lower() in p.lower() for sw in STOP_WORDS):
-            break
-        clean.append(p)
-    return ", ".join(clean)
+).strip()
 
 
-def normalize(city: str, raw: str) -> str:
-    """Возвращает строку формата 'Россия, <город>, <очищенный адрес>'"""
-    addr = POST_CODE.sub("", raw)  # убираем индекс
-    for pattern, repl in ABBR_REPLACE.items():  # заменяем сокращения
-        addr = re.sub(pattern, repl, addr, flags=re.IGNORECASE)
-    addr = re.sub(r"\s{2,}", " ", addr)  # лишние пробелы
-    addr = addr.strip(", ")
-    addr = strip_stopwords(addr)
-    return f"Россия, {city}, {addr}"
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def load_cache(path: Path) -> Dict[str, Any]:
+    if path.exists():
+        try:
+            return json.loads(path.read_text("utf-8"))
+        except json.JSONDecodeError:
+            print("[warn] broken cache, start new")
+    return {}
 
 
-# ---------- Кэш ----------
-class GeocodeCache:
-    def __init__(self, path: str = "geocode_cache.json"):
-        self.path = Path(path)
-        self.data: dict[str, tuple[float, float] | None] = (
-            json.loads(self.path.read_text("utf-8")) if self.path.exists() else {}
-        )
-
-    def get(self, key: str):
-        return self.data.get(key)
-
-    def set(self, key: str, coords):
-        self.data[key] = coords
-        self.path.write_text(
-            json.dumps(self.data, ensure_ascii=False, indent=2), "utf-8"
-        )
+def save_cache(cache: Dict[str, Any], path: Path) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=2), "utf-8")
+    tmp.replace(path)
 
 
-# ---------- Геокодер ----------
-class GeoCoder:
-    def __init__(self, cache: GeocodeCache):
-        self.cache = cache
-        self.nom = RateLimiter(
-            Nominatim(user_agent="map_app", timeout=10).geocode,
-            min_delay_seconds=2.0,
-            max_retries=3,
-            error_wait_seconds=7,
-        )
-        self.arc = RateLimiter(
-            ArcGIS(timeout=10).geocode,
-            min_delay_seconds=2.0,
-            max_retries=3,
-            error_wait_seconds=7,
-        )
+def normalize_cols(df: pd.DataFrame) -> pd.DataFrame:
+    def clean(c: str) -> str:
+        c = c.replace("-", "-")
+        c = " ".join(c.replace("\u00A0", " ").split())
+        return c.strip()
 
-    def get(self, city: str, raw_addr: str):
-        query = normalize(city, raw_addr)
-
-        if (cached := self.cache.get(query)) is not None:
-            return cached
-
-        lat, lon, lvl = try_progressive((self.nom, self.arc), query)
-        res = (lat, lon, lvl) if lvl == "house" else None  # сохраняем в кэш только «дом»
-        self.cache.set(query, res)
-        return res
+    return df.rename(columns={c: clean(c) for c in df.columns})
 
 
-# ---------- Загрузка Excel ----------
-class ExcelDataLoader:
-    def __init__(self, file_path: str):
-        self.file_path = file_path
+def add_mechanics_legend(fmap, mechanic_colors):
+    legend_html = """
+    {% macro html(this, kwargs) %}
+    <div style="
+        position: fixed;
+        bottom: 50px;
+        left: 50px;
+        z-index:9999;
+        background: white;
+        padding: 12px 18px;
+        border-radius: 12px;
+        border: 1px solid #bbb;
+        font-size: 14px;">
+    <b>Механики КТО:</b><br>
+    """ + "".join(
+        f'<div style="margin-bottom:4px;"><span style="color:{color};font-size:18px;">●</span> {name}</div>'
+        for name, color in mechanic_colors.items() if name.strip()
+    ) + """
+    </div>
+    {% endmacro %}
+    """
+    macro = MacroElement()
+    macro._template = Template(legend_html)
+    fmap.get_root().add_child(macro)
 
-    def load(self):
-        return pd.read_excel(self.file_path)
+
+def get_color(name: str) -> str:
+    # Цвет по хэшу строки — всегда одинаковый для одного механика
+    palette = [
+        "red", "blue", "green", "orange", "purple", "darkred", "lightred",
+        "beige", "darkblue", "darkgreen", "cadetblue", "darkpurple", "white",
+        "pink", "lightblue", "lightgreen", "gray", "black", "lightgray"
+    ]
+    # Преобразуем имя в индекс палитры
+    idx = int(hashlib.md5(name.encode()).hexdigest(), 16) % len(palette)
+    return palette[idx]
 
 
-# ---------- Генератор карты ----------
-class MapGenerator:
-    def __init__(self, center_lat: float, center_lon: float, zoom: int = 11):
-        self._map = folium.Map(location=[center_lat, center_lon], zoom_start=zoom)
+def normalize_address(addr: str) -> str:
+    # Нормализация адресных сокращений
+    return (
+        addr.replace('д.', 'дом')
+        .replace('д ', 'дом ')
+        .replace('ул.', 'улица')
+        .replace('ул ', 'улица ')
+        .replace('пр-т', 'проспект')
+        .replace('пр.', 'проезд')
+        .replace('пер.', 'переулок')
+        .replace('пл.', 'площадь')
+        .replace('г.', '')
+        .replace(' г ', ' ')
+        .replace(',', ' ')
+        .replace('  ', ' ')
+        .strip()
+    )
 
-    def add_marker(self, lat: float, lon: float, tooltip: str, popup_info: dict):
-        html = "<br>".join(f"<b>{k}:</b> {v}" for k, v in popup_info.items())
-        folium.Marker([lat, lon], tooltip=tooltip, popup=html).add_to(self._map)
 
-    def save(self, path: str = "index.html"):
-        self._map.save(path)
+# ---------------------------------------------------------------------------
+# Yandex Geocoding
+# ---------------------------------------------------------------------------
+
+def geocode(addr: str, place: str, key: str, regions: List[str]) -> Optional[Dict[str, Any]]:
+    url = "https://geocode-maps.yandex.ru/1.x/"
+    # Пробуем скомбинировать адрес и населенный пункт
+    address_variants = []
+    addr_norm = normalize_address(addr)
+    if place and place not in addr_norm:
+        address_variants.append(f"{place}, {addr_norm}")
+    address_variants.append(addr_norm)
+    address_variants.append(addr)  # вдруг оригинал прокатит
+
+    # Разные шаблоны с регионом и страной
+    tries = []
+    for base in address_variants:
+        for region in regions + ["Россия"]:
+            tries.append(f"{base}, {region} область")
+            tries.append(f"{base}, {region}")
+        tries.append(base)
+
+    tried = set()
+    for q in tries:
+        q = q.strip()
+        if not q or q in tried:
+            continue
+        tried.add(q)
+        params = {
+            "apikey": key,
+            "geocode": q,
+            "format": "json",
+            "lang": "ru_RU"
+        }
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            r.raise_for_status()
+            resp = r.json()
+            features = resp["response"]["GeoObjectCollection"]["featureMember"]
+            if not features:
+                continue
+            obj = features[0]["GeoObject"]
+            pos = obj["Point"]["pos"].split()
+            full_name = obj["metaDataProperty"]["GeocoderMetaData"]["text"]
+            # Можно ослабить фильтр, чтобы максимум точек получить:
+            # if not any(r.lower() in full_name.lower() for r in regions):
+            #     continue
+            return {
+                "lat": float(pos[1]),
+                "lon": float(pos[0]),
+                "full_name": full_name
+            }
+        except Exception as e:
+            print(f"[err] Yandex Geocoder: {e} [{q}]")
+    return None
 
 
-# ---------- Склейка ----------
-def main():
-    data = ExcelDataLoader("map.xlsx").load()
-    data.columns = data.columns.str.strip().str.replace(r"\s+", " ", regex=True)
-    cache = GeocodeCache()
-    geocoder = GeoCoder(cache)
-    m = MapGenerator(51.533557, 46.034257)  # центр Саратова
-    
-    not_found_rows = []
+# ---------------------------------------------------------------------------
+# Map
+# ---------------------------------------------------------------------------
 
-    total = found = 0
-    for _, row in data.iterrows():
-        total += 1
-        coords = geocoder.get(row["Населенный пункт"], row["Адрес"])
-        
-        if coords is None:
-            not_found_rows.append({
-                "№ п/п": row.get("№ п/п", ""),
-                "Адрес": row["Адрес"],
-                "Насел. пункт": row["Населенный пункт"],
-            })
+def make_popup(row: pd.Series) -> folium.Popup:
+    return folium.Popup(POPUP_TEMPLATE.format_map(defaultdict(str, row.to_dict())), max_width=450)
+
+
+def build_map(df: pd.DataFrame, *, key: str, regions: List[str], cache: Dict[str, Any], flush: bool) -> Tuple[
+    folium.Map, List[str]]:
+    df = normalize_cols(df)
+    misses: List[str] = []
+    marks: List[Tuple[float, float, pd.Series]] = []
+
+    # Собрать всех механиков для легенды
+    kto_to_color = {}
+    for _, row in df.iterrows():
+        kto = str(row.get("Механик КТО", "")).strip()
+        if kto and kto not in kto_to_color:
+            kto_to_color[kto] = get_color(kto or "default")
+
+    for _, row in df.iterrows():
+        addr = str(row.get("Адрес", "")).strip()
+        place = str(row.get("Населенный пункт", "")).strip()
+        if not addr:
+            misses.append("<пустой адрес>")
             continue
 
-        found += 1
-        lat, lon, _ = coords
+        cached = cache.get(addr)
+        if flush and cached is None:
+            cached = None  # force retry
 
-        popup_info = {
-            "Филиал": row.get("Филиал", ""),
-            "Аптека": row.get("Наличие аптеки на ТТ", "Нет"),
-            "Инж. эксплуатации": row.get("Инженер по эксплуатации", ""),
-            "Инж. ХиТО": row.get("Инженер по ХиТО", ""),
-            "Инж.-энергетик": row.get("Инженер-энергетик", ""),
-            "Инж.-теплотехник": row.get("Инженер-теплотехник", ""),
-            "Механик КТО": row.get("Механик  КТО", ""),
-            "Механик ХО": row.get("Механик ХО", ""),
-            "Электрик": row.get("Электрик", ""),
-        }
-        m.add_marker(lat, lon, tooltip=row["Наименование"], popup_info=popup_info)
+        resolved = cached if cached else geocode(addr, place, key, regions)
+        cache[addr] = resolved  # may be None
 
-    m.save()
+        if resolved is None:
+            misses.append(addr if not place else f"{place}, {addr}")
+            continue
+        marks.append((resolved["lat"], resolved["lon"], row))
 
-    if not_found_rows:
-        pd.DataFrame(not_found_rows).to_excel("not_found.xlsx", index=False)
-        print(f"⚠️  Не найден точный дом для {len(not_found_rows)} записей. "f"Список → not_found.xlsx")
+        print(f"Found {len(marks)} valid points, {len(misses)} misses")
+
+    if not marks:
+        raise RuntimeError("Nothing resolved – check API key or regions")
+
+    avg_lat = sum(m[0] for m in marks) / len(marks)
+    avg_lon = sum(m[1] for m in marks) / len(marks)
+    fmap = folium.Map([avg_lat, avg_lon], zoom_start=9)
+    for lat, lon, row in marks:
+        kto = str(row.get("Механик КТО", "")).strip()
+        color = kto_to_color.get(kto or "default", "blue")
+        folium.Marker(
+            [lat, lon],
+            popup=make_popup(row),
+            icon=folium.Icon(color=color)
+        ).add_to(fmap)
+
+    # Добавить легенду на карту!
+    add_mechanics_legend(fmap, kto_to_color)
+    return fmap, misses
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def parse() -> argparse.Namespace:
+    p = argparse.ArgumentParser("Excel → Yandex Map (Saratov & Penza)")
+    p.add_argument("--excel", default=DEFAULT_EXCEL)
+    p.add_argument("--sheet", default=DEFAULT_SHEET)
+    p.add_argument("--cache", default=DEFAULT_CACHE)
+    p.add_argument("--output", default=DEFAULT_HTML)
+    p.add_argument("--key", default=DEFAULT_API_KEY)
+    p.add_argument("--regions", default=",".join(DEFAULT_REGIONS))
+    p.add_argument("--flush", action="store_true", help="requery addresses cached as None")
+    return p.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    args = parse()
+    regions = [r.strip() for r in args.regions.split(",") if r.strip()]
+
+    df = pd.read_excel(args.excel, sheet_name=args.sheet)
+    cache_file = Path(args.cache)
+    cache = load_cache(cache_file)
+
+    try:
+        fmap, bad = build_map(df, key=args.key, regions=regions, cache=cache, flush=args.flush)
+    except RuntimeError as e:
+        print("[err]", e)
+        return
+
+    save_cache(cache, cache_file)
+    fmap.save(args.output)
+
+    if bad:
+        print(f"\n⚠ Не распознаны ({len(bad)}):")
+        for a in bad:
+            print("  •", a)
+        # сохраняем для ручной правки
+        pd.DataFrame({"Адрес": bad}).to_excel("missed_addresses.xlsx", index=False)
+        print("Сохранил список нераспознанных в missed_addresses.xlsx")
     else:
-        print("✅ Все записи имеют точный адрес.")
-
-    print(f"Маркеров на карте: {found}/{total}")
+        print("Все адреса найдены!")
+    print(f"✔ Карту сохранил в '{args.output}'.")
 
 
 if __name__ == "__main__":
